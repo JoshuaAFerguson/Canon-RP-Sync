@@ -1,0 +1,20 @@
+# Go
+/bin/
+/dist/
+*.test
+*.out
+
+# Runtime state
+/data/
+manifest.json
+rpsync.yaml
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Mobile build output
+apps/ios/build/
+apps/android/build/
+apps/android/.gradle/

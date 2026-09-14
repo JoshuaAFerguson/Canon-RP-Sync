@@ -1,0 +1,17 @@
+# Copy to rpsync.yaml and edit.
+
+# Leave empty to discover via SSDP; set to skip discovery.
+camera_host: ""          # e.g. 192.168.1.42
+camera_port: 8080
+
+dest: /photos/canon      # imported files land in dest/YYYY/YYYY-MM-DD/
+manifest: /photos/canon/.rpsync-manifest.json
+
+# Which file types to import. Supported: jpg, cr3, mp4
+include: [jpg, cr3]
+
+# Never delete from the card unless this is true.
+delete_after_import: false
+
+# Daemon behaviour
+poll_interval: 10s       # how often to look for the camera when it's offline

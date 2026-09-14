@@ -1,0 +1,13 @@
+[Unit]
+Description=Canon EOS RP wireless photo sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/rpsync daemon --dest /srv/photos/canon
+Restart=always
+RestartSec=5
+User=rpsync
+
+[Install]
+WantedBy=multi-user.target

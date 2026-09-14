@@ -1,0 +1,10 @@
+services:
+  rpsync:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    network_mode: host   # needed for SSDP multicast discovery
+    restart: unless-stopped
+    volumes:
+      - /srv/photos/canon:/photos
+    command: ["daemon", "--dest", "/photos", "--include", "jpg,cr3"]
