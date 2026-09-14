@@ -1,6 +1,7 @@
 package events_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -83,5 +84,53 @@ func TestRecentKeepsLastEvents(t *testing.T) {
 	}
 	if got := len(b.Recent(0)); got > 100 {
 		t.Errorf("history grew to %d, want it bounded", got)
+	}
+}
+
+// TestPublishRacesWithUnsubscribe reproduces a crash found by CI: Publish used
+// to snapshot subscribers under the lock and send after releasing it, so an
+// unsubscribe landing in that window closed the channel mid-send. A closed
+// channel does not merely race — sending on it panics, which would take the
+// daemon down when a browser dropped its event stream.
+func TestPublishRacesWithUnsubscribe(t *testing.T) {
+	b := events.NewBus()
+
+	done := make(chan struct{})
+	var publishers sync.WaitGroup
+	publishers.Add(1)
+	go func() {
+		defer publishers.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				b.Publishf(events.KindImport, "imported a file")
+			}
+		}
+	}()
+
+	// Subscribers come and go while events are being published, the way SSE
+	// clients connect and disconnect.
+	var churn sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		churn.Add(1)
+		go func() {
+			defer churn.Done()
+			ch, cancel := b.Subscribe(1)
+			go func() {
+				for range ch {
+				}
+			}()
+			time.Sleep(time.Millisecond)
+			cancel()
+		}()
+	}
+	churn.Wait()
+	close(done)
+	publishers.Wait()
+
+	if n := b.Subscribers(); n != 0 {
+		t.Errorf("Subscribers = %d after every subscription was cancelled", n)
 	}
 }

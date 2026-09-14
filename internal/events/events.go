@@ -51,23 +51,26 @@ func NewBus() *Bus {
 }
 
 // Publish delivers an event to every subscriber and records it in the history.
+//
+// The fan-out happens while the lock is held, which is what keeps an
+// unsubscribing reader from closing a channel mid-send — sending on a closed
+// channel panics, and a browser dropping its event stream must never be able to
+// take the daemon down. Holding the lock is safe because every send below is
+// non-blocking, so this never waits on a subscriber.
 func (b *Bus) Publish(ev Event) {
 	if ev.Time.IsZero() {
 		ev.Time = time.Now()
 	}
 
 	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	b.history = append(b.history, ev)
 	if len(b.history) > historySize {
 		b.history = b.history[len(b.history)-historySize:]
 	}
-	subs := make([]chan Event, 0, len(b.subs))
-	for _, ch := range b.subs {
-		subs = append(subs, ch)
-	}
-	b.mu.Unlock()
 
-	for _, ch := range subs {
+	for _, ch := range b.subs {
 		select {
 		case ch <- ev:
 		default: // subscriber is behind; drop rather than block the producer
@@ -97,9 +100,11 @@ func (b *Bus) Subscribe(buffer int) (<-chan Event, func()) {
 	var once sync.Once
 	return ch, func() {
 		once.Do(func() {
+			// Close under the same lock Publish fans out with, so a send can
+			// never overlap the close.
 			b.mu.Lock()
+			defer b.mu.Unlock()
 			delete(b.subs, id)
-			b.mu.Unlock()
 			close(ch)
 		})
 	}
