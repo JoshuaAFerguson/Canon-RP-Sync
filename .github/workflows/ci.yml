@@ -20,12 +20,32 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
-          check-latest: true
+          # Current stable, not the go.mod minimum: Go 1.22 cannot link cgo
+          # test binaries on today's macOS runners ("dyld: missing LC_UUID
+          # load command"). The minimum version is covered by its own job.
+          go-version: stable
       - name: Vet
         run: go vet ./...
       - name: Test
         run: go test -race ./...
+
+  minimum-go:
+    name: minimum supported Go (${{ env.MIN_GO }})
+    runs-on: ubuntu-latest
+    env:
+      MIN_GO: "1.22"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.MIN_GO }}
+          check-latest: true
+      # README promises Go 1.22+, so the floor has to keep building and
+      # passing. Linux only, where the toolchain issue above does not apply.
+      - name: Build and test
+        run: |
+          go build ./...
+          go test ./...
 
   lint:
     name: formatting and tidiness
@@ -34,8 +54,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
-          check-latest: true
+          go-version: stable
       - name: gofmt
         run: |
           unformatted=$(gofmt -l .)
@@ -56,8 +75,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
-          check-latest: true
+          go-version: stable
       # The daemon is meant to run on a NAS, a desktop and a laptop, so every
       # release target must at least build on every pull request.
       - name: Build all targets
