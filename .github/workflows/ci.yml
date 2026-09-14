@@ -30,15 +30,14 @@ jobs:
         run: go test -race ./...
 
   minimum-go:
-    name: minimum supported Go (${{ env.MIN_GO }})
+    # Keep the version literal: the env context is not available in a job name.
+    name: minimum supported Go (1.22)
     runs-on: ubuntu-latest
-    env:
-      MIN_GO: "1.22"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.MIN_GO }}
+          go-version: "1.22"
           check-latest: true
       # README promises Go 1.22+, so the floor has to keep building and
       # passing. Linux only, where the toolchain issue above does not apply.
