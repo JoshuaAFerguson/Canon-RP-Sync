@@ -1,4 +1,7 @@
-// rpsync is the CLI and daemon for canon-rp-sync.
+// Command rpsync imports photos from a Canon EOS RP over Wi-Fi.
+//
+// It runs as a foreground command, as a background service on Windows, macOS
+// and Linux, or in a container on a NAS.
 package main
 
 import (
@@ -6,19 +9,18 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
-	"github.com/JoshuaAFerguson/canon-rp-sync/internal/ccapi"
-	"github.com/JoshuaAFerguson/canon-rp-sync/internal/discovery"
-	"github.com/JoshuaAFerguson/canon-rp-sync/internal/manifest"
-	rpsync "github.com/JoshuaAFerguson/canon-rp-sync/internal/sync"
+	"github.com/JoshuaAFerguson/canon-rp-sync/internal/config"
+	"github.com/JoshuaAFerguson/canon-rp-sync/internal/service"
 )
+
+// version is overridden at build time with -ldflags "-X main.version=...".
+var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -27,151 +29,181 @@ func main() {
 	}
 	cmd, args := os.Args[1], os.Args[2:]
 
+	// When Windows starts rpsync through the Service Control Manager there are
+	// no arguments and no console; run the daemon under the SCM handler.
+	if cmd == "daemon" || cmd == "service-run" {
+		handled, err := service.RunAsService("rpsync", func(ctx context.Context) error {
+			return runDaemon(ctx, args)
+		})
+		if handled {
+			exitOn(err)
+			return
+		}
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	var err error
 	switch cmd {
-	case "discover":
-		err = runDiscover(ctx)
-	case "pull":
-		err = runPull(ctx, args, false)
 	case "daemon":
-		err = runPull(ctx, args, true)
+		err = runDaemon(ctx, args)
+	case "pull":
+		err = runPull(ctx, args)
+	case "discover":
+		err = runDiscover(ctx, args)
+	case "pair":
+		err = runPair(args)
+	case "devices":
+		err = runDevices(args)
+	case "service":
+		err = runService(args)
+	case "config":
+		err = runConfig(args)
+	case "version", "--version", "-v":
+		fmt.Printf("rpsync %s\n", version)
 	case "help", "-h", "--help":
 		usage()
 	default:
+		fmt.Fprintf(os.Stderr, "rpsync: unknown command %q\n\n", cmd)
 		usage()
 		os.Exit(2)
 	}
-	if err != nil && !errors.Is(err, context.Canceled) {
-		log.Fatal(err)
+	exitOn(err)
+}
+
+func exitOn(err error) {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return
 	}
+	fmt.Fprintln(os.Stderr, "rpsync: "+err.Error())
+	os.Exit(1)
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `usage: rpsync <command> [flags]
+	fmt.Fprint(os.Stderr, `rpsync — wireless photo import for the Canon EOS RP
+
+usage: rpsync <command> [flags]
 
 commands:
-  discover   find CCAPI cameras on the LAN and print device info
-  pull       import new files once and exit
-  daemon     keep running, importing as the camera appears / shoots
+  daemon     watch for the camera and import continuously (also serves the API)
+  pull       import anything new once, then exit
+  discover   find CCAPI cameras on the local network
+  pair       generate a pairing code for a phone, tablet or browser
+  devices    list or revoke paired devices
+  service    install or control the background service
+  config     print the effective configuration
+  version    print the version
 
-pull/daemon flags:
-  --host      camera IP (skip discovery)
-  --dest      destination directory (default ./photos)
-  --include   comma-separated extensions (default jpg,cr3)
-  --delete    delete files from the card after import (default false)`)
+Run "rpsync <command> -h" for the flags of a command.
+
+Configuration is read from rpsync.yaml (see `+"`rpsync config`"+` for the search
+path), overridden by RPSYNC_* environment variables, then by flags.
+`)
 }
 
-func runDiscover(ctx context.Context) error {
-	cams, err := discovery.Discover(ctx, 3*time.Second)
+// commonFlags are the configuration overrides shared by daemon and pull.
+type commonFlags struct {
+	configPath string
+	host       string
+	port       int
+	dest       string
+	include    string
+	del        bool
+	layout     string
+	dateSource string
+	addr       string
+	noServer   bool
+	remoteMode string
+	logLevel   string
+	stateDir   string
+}
+
+func (c *commonFlags) register(fs *flag.FlagSet, withServer bool) {
+	fs.StringVar(&c.configPath, "config", "", "path to rpsync.yaml (default: search standard locations)")
+	fs.StringVar(&c.host, "host", "", "camera address (skips discovery)")
+	fs.IntVar(&c.port, "port", 0, "camera CCAPI port")
+	fs.StringVar(&c.dest, "dest", "", "destination directory for imports")
+	fs.StringVar(&c.include, "include", "", "comma-separated extensions to import, e.g. jpg,cr3")
+	fs.BoolVar(&c.del, "delete", false, "delete files from the card after import")
+	fs.StringVar(&c.layout, "layout", "", "folder layout, as a Go time format (default 2006/2006-01-02)")
+	fs.StringVar(&c.dateSource, "date-source", "", `which date decides the folder: "exif" or "import"`)
+	fs.StringVar(&c.logLevel, "log-level", "", "debug, info, warn or error")
+	fs.StringVar(&c.stateDir, "state-dir", "", "directory for tokens and runtime state")
+	if withServer {
+		fs.StringVar(&c.addr, "addr", "", "address for the HTTP API and web UI (default :8787)")
+		fs.BoolVar(&c.noServer, "no-server", false, "do not serve the HTTP API")
+		fs.StringVar(&c.remoteMode, "remote", "", `remote access: "none", "tailscale" or "cloudflare"`)
+	}
+}
+
+// load reads the configuration and applies the flags that were set. Only flags
+// the user actually passed override the file, so an unset flag's zero value
+// never silently wins.
+func (c *commonFlags) load(fs *flag.FlagSet) (config.Config, error) {
+	cfg, err := config.Load(c.configPath)
 	if err != nil {
-		return err
+		return cfg, err
 	}
-	for _, c := range cams {
-		info, err := ccapi.New(c.Host, c.Port).DeviceInfo(ctx)
-		if err != nil {
-			fmt.Printf("%s:%d  (error: %v)\n", c.Host, c.Port, err)
-			continue
-		}
-		fmt.Printf("%s:%d  %s %s  fw %s  serial %s\n",
-			c.Host, c.Port, info.Manufacturer, info.ProductName, info.FirmwareVersion, info.SerialNumber)
+
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	if set["host"] {
+		cfg.Camera.Host = c.host
 	}
-	return nil
+	if set["port"] {
+		cfg.Camera.Port = c.port
+	}
+	if set["dest"] {
+		cfg.Storage.Dest = c.dest
+		// A new destination implies a manifest inside it unless pinned.
+		cfg.Storage.Manifest = ""
+	}
+	if set["include"] {
+		cfg.Import.Include = strings.Split(c.include, ",")
+	}
+	if set["delete"] {
+		cfg.Import.DeleteAfterImport = c.del
+	}
+	if set["layout"] {
+		cfg.Storage.Layout = c.layout
+	}
+	if set["date-source"] {
+		cfg.Storage.DateSource = c.dateSource
+	}
+	if set["state-dir"] {
+		cfg.Storage.StateDir = c.stateDir
+	}
+	if set["addr"] {
+		cfg.Server.Addr = c.addr
+	}
+	if set["no-server"] {
+		cfg.Server.Enabled = !c.noServer
+	}
+	if set["remote"] {
+		cfg.Remote.Mode = c.remoteMode
+	}
+	if set["log-level"] {
+		cfg.Log.Level = c.logLevel
+	}
+
+	cfg.Normalize()
+	return cfg, cfg.Validate()
 }
 
-func runPull(ctx context.Context, args []string, daemon bool) error {
-	fs := flag.NewFlagSet("pull", flag.ExitOnError)
-	host := fs.String("host", "", "camera IP")
-	dest := fs.String("dest", "./photos", "destination directory")
-	include := fs.String("include", "jpg,cr3", "extensions to import")
-	del := fs.Bool("delete", false, "delete from card after import")
-	interval := fs.Duration("interval", 10*time.Second, "daemon: retry interval when camera is offline")
-	_ = fs.Parse(args)
-
-	opt := rpsync.Options{Dest: *dest, Include: map[string]bool{}, DeleteAfterImport: *del}
-	for _, e := range strings.Split(*include, ",") {
-		if e = strings.TrimSpace(strings.ToLower(e)); e != "" {
-			opt.Include[e] = true
-		}
+// newLogger builds the structured logger used across the daemon.
+func newLogger(level string) *slog.Logger {
+	var lvl slog.Level
+	switch level {
+	case "debug":
+		lvl = slog.LevelDebug
+	case "warn":
+		lvl = slog.LevelWarn
+	case "error":
+		lvl = slog.LevelError
+	default:
+		lvl = slog.LevelInfo
 	}
-
-	if err := os.MkdirAll(*dest, 0o755); err != nil {
-		return err
-	}
-	mf, err := manifest.Load(filepath.Join(*dest, ".rpsync-manifest.json"))
-	if err != nil {
-		return err
-	}
-
-	for {
-		cam, err := connect(ctx, *host)
-		if err != nil {
-			if !daemon {
-				return err
-			}
-			log.Printf("camera not reachable (%v); retrying in %s", err, *interval)
-			if !sleep(ctx, *interval) {
-				return ctx.Err()
-			}
-			continue
-		}
-
-		n, err := rpsync.Run(ctx, cam, mf, opt)
-		log.Printf("imported %d file(s)", n)
-		if !daemon {
-			return err
-		}
-		if err != nil {
-			log.Printf("sync error: %v", err)
-			if !sleep(ctx, *interval) {
-				return ctx.Err()
-			}
-			continue
-		}
-
-		// Camera is up and we're caught up: block on events until something changes.
-		for {
-			ev, err := cam.PollEvents(ctx)
-			if err != nil {
-				log.Printf("event poll ended: %v", err)
-				break
-			}
-			if len(ev.AddedContents) > 0 {
-				n, err := rpsync.Run(ctx, cam, mf, opt)
-				log.Printf("imported %d file(s)", n)
-				if err != nil {
-					log.Printf("sync error: %v", err)
-					break
-				}
-			}
-		}
-	}
-}
-
-func connect(ctx context.Context, host string) (*ccapi.Client, error) {
-	if host == "" {
-		cams, err := discovery.Discover(ctx, 3*time.Second)
-		if err != nil {
-			return nil, err
-		}
-		host = cams[0].Host
-	}
-	cam := ccapi.New(host, ccapi.DefaultPort)
-	info, err := cam.DeviceInfo(ctx)
-	if err != nil {
-		return nil, err
-	}
-	log.Printf("connected to %s (%s)", info.ProductName, host)
-	return cam, nil
-}
-
-func sleep(ctx context.Context, d time.Duration) bool {
-	select {
-	case <-ctx.Done():
-		return false
-	case <-time.After(d):
-		return true
-	}
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
 }

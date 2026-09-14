@@ -1,17 +1,73 @@
-# Copy to rpsync.yaml and edit.
+# rpsync configuration.
+#
+# Copy to rpsync.yaml next to the binary, or to one of the locations listed by
+# `rpsync config --path`. Every key is optional: rpsync runs with no config at
+# all, discovering the camera and importing into your Pictures folder.
+#
+# Precedence: this file < RPSYNC_* environment variables < command-line flags.
 
-# Leave empty to discover via SSDP; set to skip discovery.
-camera_host: ""          # e.g. 192.168.1.42
-camera_port: 8080
+camera:
+  # Leave host empty to find the camera automatically (SSDP, then a subnet
+  # probe). Pin it when multicast is blocked, which is common on VLANs and
+  # bridged Docker networks.
+  host: ""                  # e.g. 192.168.1.42
+  port: 8080
+  discovery: true
+  discovery_timeout: 3s
+  # How long to wait before looking again while the camera is off or away.
+  poll_interval: 15s
+  request_timeout: 60s
 
-dest: /photos/canon      # imported files land in dest/YYYY/YYYY-MM-DD/
-manifest: /photos/canon/.rpsync-manifest.json
+storage:
+  # Imported files land here, under the layout below.
+  dest: /photos
+  # Defaults to dest/.rpsync-manifest.json.
+  manifest: ""
+  # A Go time layout. "2006/2006-01-02" gives 2024/2024-05-04/IMG_0001.JPG.
+  layout: "2006/2006-01-02"
+  # "exif" files photos by capture time (falling back to what the camera
+  # reports, then to the import time); "import" always uses the import time.
+  date_source: exif
+  # Device tokens, thumbnails and other runtime state.
+  state_dir: ""             # default: /config in Docker, ~/.config/rpsync otherwise
 
-# Which file types to import. Supported: jpg, cr3, mp4
-include: [jpg, cr3]
+import:
+  # Extensions to import. Leave empty to take everything on the card.
+  include: [jpg, cr3]
+  # The card is never modified unless this is true.
+  delete_after_import: false
 
-# Never delete from the card unless this is true.
-delete_after_import: false
+server:
+  # The HTTP API and web UI the companion apps talk to.
+  enabled: true
+  addr: ":8787"
+  # Skip token auth for requests from this machine. Convenient on a desktop;
+  # leave off on a NAS or anywhere the port is exposed.
+  allow_local_unauthenticated: false
+  # Shown to devices at pairing time; set it when behind a proxy or tunnel.
+  advertise_url: ""         # e.g. https://rp.example.com
+  # Largest single upload a companion app may hand over (bytes).
+  max_upload_bytes: 2147483648
 
-# Daemon behaviour
-poll_interval: 10s       # how often to look for the camera when it's offline
+remote:
+  # "none", "tailscale" or "cloudflare". See docs/REMOTE_ACCESS.md.
+  mode: none
+
+  tailscale:
+    # rpsync reads the node's address from an existing tailscaled; it does not
+    # run one itself.
+    cli: ""                 # default: tailscale on PATH
+    hostname: ""            # override the detected MagicDNS name
+
+  cloudflare:
+    binary: ""              # default: cloudflared on PATH
+    # Prefer token_file or RPSYNC_CLOUDFLARE_TOKEN over putting the token here.
+    token: ""
+    token_file: ""
+    hostname: ""            # the public hostname routed to this daemon
+    # Run cloudflared as a child process. Set false when a sidecar container or
+    # a system service already runs the connector.
+    managed: true
+
+log:
+  level: info               # debug, info, warn or error

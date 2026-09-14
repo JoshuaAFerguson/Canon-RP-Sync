@@ -1,0 +1,93 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  binaries:
+    name: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build release archives
+        run: |
+          set -eux
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          mkdir -p dist
+          for target in \
+            linux/amd64 linux/arm64 linux/arm \
+            darwin/amd64 darwin/arm64 \
+            windows/amd64 windows/arm64; do
+            os=${target%/*}
+            arch=${target#*/}
+            out="dist/rpsync-${os}-${arch}"
+            bin="rpsync"
+            if [ "$os" = "windows" ]; then bin="rpsync.exe"; fi
+            mkdir -p "$out"
+            GOOS=$os GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X main.version=${VERSION}" \
+              -o "$out/$bin" ./cmd/rpsync
+            cp README.md LICENSE rpsync.example.yaml "$out/"
+            if [ "$os" = "windows" ]; then
+              (cd dist && zip -qr "rpsync-${VERSION}-${os}-${arch}.zip" "rpsync-${os}-${arch}")
+            else
+              tar -czf "dist/rpsync-${VERSION}-${os}-${arch}.tar.gz" -C dist "rpsync-${os}-${arch}"
+            fi
+          done
+          (cd dist && sha256sum *.tar.gz *.zip > checksums.txt)
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+
+  image:
+    name: container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          # arm64 covers ARM-based Synology units; amd64 covers the x86 ones.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
