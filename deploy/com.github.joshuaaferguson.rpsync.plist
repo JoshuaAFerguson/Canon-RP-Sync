@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Reference LaunchAgent. `rpsync service install` generates this for you with
+     the correct paths; this copy is for managed macOS fleets. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.github.joshuaaferguson.rpsync</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/rpsync</string>
+		<string>daemon</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/tmp/rpsync.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/rpsync.err.log</string>
+</dict>
+</plist>

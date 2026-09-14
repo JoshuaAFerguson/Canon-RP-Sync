@@ -1,10 +1,65 @@
+# Basic deployment: rpsync on the LAN, reachable at http://<host>:8787.
+#
+#   docker compose up -d
+#   docker compose logs -f rpsync     # the first pairing code is printed here
+#
+# Remote access is opt-in; see the tailscale and cloudflared profiles below and
+# docs/REMOTE_ACCESS.md.
 services:
   rpsync:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    network_mode: host   # needed for SSDP multicast discovery
+    image: ghcr.io/joshuaaferguson/canon-rp-sync:latest
+    # To build locally instead of pulling:
+    # build:
+    #   context: ..
+    #   dockerfile: deploy/Dockerfile
+    container_name: rpsync
     restart: unless-stopped
+
+    # Host networking lets SSDP multicast reach the camera. Without it, rpsync
+    # falls back to probing the subnet, which only works if the container is on
+    # the same L2 network as the camera — set camera.host to be sure.
+    network_mode: host
+
+    # Match the account that owns the photo share (Synology: DSM > User > id).
+    user: "1000:1000"
+
+    environment:
+      - TZ=America/Los_Angeles
+      - RPSYNC_INCLUDE=jpg,cr3
+      # Pin the camera when multicast is unavailable:
+      # - RPSYNC_CAMERA_HOST=192.168.1.42
+      # - RPSYNC_DELETE_AFTER_IMPORT=false
+
     volumes:
-      - /srv/photos/canon:/photos
-    command: ["daemon", "--dest", "/photos", "--include", "jpg,cr3"]
+      - /volume1/photo/Canon:/photos
+      - ./config:/config
+
+  # --- optional: reach rpsync over your tailnet -----------------------------
+  # docker compose --profile tailscale up -d
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: rpsync-tailscale
+    profiles: ["tailscale"]
+    restart: unless-stopped
+    hostname: rpsync
+    network_mode: host
+    cap_add: [NET_ADMIN, SYS_MODULE]
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY:?set TS_AUTHKEY in .env}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_EXTRA_ARGS=--advertise-tags=tag:rpsync
+    volumes:
+      - ./tailscale:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+
+  # --- optional: reach rpsync through a Cloudflare Tunnel --------------------
+  # docker compose --profile cloudflare up -d
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: rpsync-cloudflared
+    profiles: ["cloudflare"]
+    restart: unless-stopped
+    network_mode: host
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}

@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rpsync</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f7;
+    --panel: #ffffff;
+    --border: #e1e1e4;
+    --text: #17171a;
+    --muted: #6b6b73;
+    --accent: #2f6feb;
+    --ok: #1a7f4b;
+    --warn: #9a6200;
+    --err: #b3261e;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131316;
+      --panel: #1c1c20;
+      --border: #2e2e34;
+      --text: #ececf0;
+      --muted: #9a9aa4;
+      --accent: #6c9bff;
+      --ok: #59c98b;
+      --warn: #e0b055;
+      --err: #ff7b72;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 16px 20px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+  header .spacer { flex: 1; }
+  main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px;
+  }
+  .card h2 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase;
+             letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+  .big { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot.connected, .dot.importing { background: var(--ok); }
+  .dot.searching { background: var(--warn); }
+  .dot.stopped { background: var(--muted); }
+  button {
+    font: inherit; padding: 7px 13px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: 0.55; cursor: default; }
+  input {
+    font: inherit; padding: 8px 10px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text); width: 100%;
+  }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .photos { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  .photo { position: relative; aspect-ratio: 3/2; border-radius: 8px; overflow: hidden;
+           background: var(--bg); border: 1px solid var(--border); }
+  .photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .photo .name { position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 6px;
+                 font-size: 11px; background: rgba(0,0,0,0.55); color: #fff;
+                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .photo .raw { display: flex; align-items: center; justify-content: center;
+                height: 100%; color: var(--muted); font-size: 12px; }
+  ul.log { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; font-size: 13px; }
+  ul.log li { padding: 5px 0; border-bottom: 1px solid var(--border); display: flex; gap: 8px; }
+  ul.log li:last-child { border-bottom: 0; }
+  ul.log time { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+  .kind-error { color: var(--err); }
+  .kind-import { color: var(--ok); }
+  code.code { font-size: 26px; letter-spacing: 0.12em; font-weight: 600;
+              font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .devices { list-style: none; margin: 0; padding: 0; }
+  .devices li { display: flex; align-items: center; gap: 8px; padding: 7px 0;
+                border-bottom: 1px solid var(--border); }
+  .devices li:last-child { border-bottom: 0; }
+  .devices .spacer { flex: 1; }
+  #login { max-width: 420px; margin: 60px auto; }
+  .error { color: var(--err); font-size: 13px; }
+  .hidden { display: none !important; }
+  section { margin-top: 16px; }
+</style>
+</head>
+<body>
+
+<div id="login" class="card hidden">
+  <h2>Pair this browser</h2>
+  <p class="muted">Run <code>rpsync pair</code> on the machine running the daemon (or read the
+     code from its startup log) and enter it here.</p>
+  <div class="row" style="margin-bottom:8px">
+    <input id="login-code" placeholder="XXXX-XXXX" autocomplete="off" spellcheck="false">
+  </div>
+  <div class="row" style="margin-bottom:8px">
+    <input id="login-name" placeholder="This browser" autocomplete="off">
+  </div>
+  <div class="row">
+    <button class="primary" id="login-submit">Pair</button>
+    <span id="login-error" class="error"></span>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>rpsync</h1>
+    <span class="muted" id="version"></span>
+    <span class="spacer"></span>
+    <button id="sync">Sync now</button>
+    <button id="pair">Pair a device</button>
+  </header>
+
+  <main>
+    <div class="grid">
+      <div class="card">
+        <h2>Camera</h2>
+        <div class="big"><span class="dot" id="state-dot"></span><span id="state">—</span></div>
+        <div class="muted" id="camera-detail"></div>
+      </div>
+      <div class="card">
+        <h2>Library</h2>
+        <div class="big" id="library-count">—</div>
+        <div class="muted" id="library-detail"></div>
+      </div>
+      <div class="card">
+        <h2>Remote access</h2>
+        <div class="big" id="remote-mode">—</div>
+        <div class="muted" id="remote-detail"></div>
+      </div>
+      <div class="card">
+        <h2>Devices</h2>
+        <ul class="devices" id="devices"></ul>
+      </div>
+    </div>
+
+    <section id="pairing-card" class="card hidden">
+      <h2>Pairing code</h2>
+      <div class="row">
+        <code class="code" id="pairing-code"></code>
+        <span class="spacer"></span>
+        <button id="pairing-cancel">Cancel</button>
+      </div>
+      <p class="muted" id="pairing-detail"></p>
+    </section>
+
+    <section class="card">
+      <h2>Recent imports</h2>
+      <div class="photos" id="photos"></div>
+      <p class="muted hidden" id="photos-empty">Nothing imported yet.</p>
+    </section>
+
+    <section class="card">
+      <h2>Activity</h2>
+      <ul class="log" id="log"></ul>
+    </section>
+  </main>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const api = (path, opts) => fetch("/api/v1" + path, Object.assign({credentials: "same-origin"}, opts));
+
+  function show(view) {
+    $("login").classList.toggle("hidden", view !== "login");
+    $("app").classList.toggle("hidden", view !== "app");
+  }
+
+  function fmtBytes(n) {
+    if (!n) return "0 B";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return n.toFixed(i === 0 ? 0 : 1) + " " + units[i];
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (isNaN(d)) return "";
+    return d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  }
+
+  function relative(iso) {
+    if (!iso) return "never";
+    const secs = (Date.now() - new Date(iso).getTime()) / 1000;
+    if (secs < 60) return "just now";
+    if (secs < 3600) return Math.floor(secs / 60) + " min ago";
+    if (secs < 86400) return Math.floor(secs / 3600) + " h ago";
+    return Math.floor(secs / 86400) + " d ago";
+  }
+
+  // ---- status ------------------------------------------------------------
+
+  function renderStatus(s) {
+    $("version").textContent = s.version || "";
+
+    const cam = s.camera || {};
+    $("state").textContent = cam.state || "unknown";
+    $("state-dot").className = "dot " + (cam.state || "stopped");
+    if (cam.camera) {
+      $("camera-detail").textContent =
+        cam.camera.model + " @ " + cam.camera.host +
+        (cam.last_sync ? " · last sync " + relative(cam.last_sync) : "");
+    } else if (cam.last_error) {
+      $("camera-detail").textContent = cam.last_error;
+    } else {
+      $("camera-detail").textContent = "Waiting for the camera to appear on the network.";
+    }
+    if (cam.progress) {
+      $("camera-detail").textContent =
+        "Importing " + cam.progress.file + " (" + cam.progress.done + "/" + cam.progress.total + ")";
+    }
+
+    const lib = s.library || {};
+    $("library-count").textContent = (lib.files || 0) + (lib.files === 1 ? " photo" : " photos");
+    $("library-detail").textContent =
+      fmtBytes(lib.bytes || 0) + " · " + (s.storage ? s.storage.dest : "");
+
+    const remote = s.remote;
+    $("remote-mode").textContent = remote ? remote.mode : "none";
+    $("remote-detail").textContent = remote
+      ? (remote.url || remote.message || remote.state || "")
+      : "Local network only.";
+
+    renderPhotos(s.photos || []);
+    (s.recent || []).forEach(appendLog);
+    loadDevices();
+  }
+
+  function renderPhotos(photos) {
+    const box = $("photos");
+    box.innerHTML = "";
+    $("photos-empty").classList.toggle("hidden", photos.length > 0);
+
+    photos.forEach((p) => {
+      const cell = document.createElement("div");
+      cell.className = "photo";
+      const img = document.createElement("img");
+      img.loading = "lazy";
+      img.alt = p.name;
+      img.src = "/api/v1/photos/" + p.id + "/thumb?size=320";
+      img.onerror = () => {
+        cell.innerHTML = '<div class="raw">' + (p.ext || "file").toUpperCase() + "</div>";
+        cell.appendChild(label(p));
+      };
+      cell.appendChild(img);
+      cell.appendChild(label(p));
+      box.appendChild(cell);
+    });
+  }
+
+  function label(p) {
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = p.name;
+    return name;
+  }
+
+  function appendLog(ev) {
+    const log = $("log");
+    const li = document.createElement("li");
+    const t = document.createElement("time");
+    t.textContent = fmtTime(ev.time);
+    const msg = document.createElement("span");
+    msg.className = "kind-" + ev.kind;
+    msg.textContent = ev.message;
+    li.appendChild(t);
+    li.appendChild(msg);
+    log.prepend(li);
+    while (log.children.length > 100) log.removeChild(log.lastChild);
+  }
+
+  function loadDevices() {
+    api("/devices").then((r) => r.json()).then((data) => {
+      const list = $("devices");
+      list.innerHTML = "";
+      (data.devices || []).forEach((d) => {
+        const li = document.createElement("li");
+        const name = document.createElement("span");
+        name.textContent = d.name;
+        const when = document.createElement("span");
+        when.className = "muted";
+        when.textContent = d.last_seen ? relative(d.last_seen) : "never seen";
+        const spacer = document.createElement("span");
+        spacer.className = "spacer";
+        const revoke = document.createElement("button");
+        revoke.textContent = "Revoke";
+        revoke.onclick = () => {
+          api("/devices/" + d.id, {method: "DELETE"}).then(loadDevices);
+        };
+        li.append(name, spacer, when, revoke);
+        list.appendChild(li);
+      });
+    }).catch(() => {});
+  }
+
+  // ---- live events -------------------------------------------------------
+
+  let stream;
+  function connectStream() {
+    if (stream) stream.close();
+    stream = new EventSource("/api/v1/events");
+    ["camera", "import", "remote", "pairing", "error"].forEach((kind) => {
+      stream.addEventListener(kind, (e) => {
+        try { appendLog(JSON.parse(e.data)); } catch (_) {}
+        if (kind === "import" || kind === "camera") scheduleRefresh();
+      });
+    });
+    stream.onerror = () => { /* EventSource retries on its own */ };
+  }
+
+  let refreshTimer;
+  function scheduleRefresh() {
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(refresh, 800);
+  }
+
+  function refresh() {
+    return api("/status").then((r) => {
+      if (r.status === 401) { show("login"); return null; }
+      return r.json();
+    }).then((s) => {
+      if (!s) return;
+      show("app");
+      $("log").innerHTML = "";
+      renderStatus(s);
+    }).catch(() => {});
+  }
+
+  // ---- actions -----------------------------------------------------------
+
+  $("sync").onclick = () => {
+    $("sync").disabled = true;
+    api("/sync", {method: "POST"}).finally(() => {
+      setTimeout(() => { $("sync").disabled = false; refresh(); }, 1000);
+    });
+  };
+
+  $("pair").onclick = () => {
+    api("/pair/code", {method: "POST"}).then((r) => r.json()).then((data) => {
+      $("pairing-code").textContent = data.code;
+      $("pairing-detail").textContent =
+        "Enter this in the companion app" +
+        (data.base_url ? " along with " + data.base_url : "") +
+        ". It expires at " + fmtTime(data.expires_at) + " and works once.";
+      $("pairing-card").classList.remove("hidden");
+    });
+  };
+
+  $("pairing-cancel").onclick = () => {
+    api("/pair/code", {method: "DELETE"}).then(() => {
+      $("pairing-card").classList.add("hidden");
+    });
+  };
+
+  $("login-submit").onclick = () => {
+    const code = $("login-code").value.trim();
+    const name = $("login-name").value.trim() || "Web UI";
+    $("login-error").textContent = "";
+    api("/pair", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({code: code, name: name, platform: "web"}),
+    }).then((r) => r.json().then((body) => ({ok: r.ok, body: body}))).then((res) => {
+      if (!res.ok) {
+        $("login-error").textContent = res.body.error || "Pairing failed";
+        return;
+      }
+      connectStream();
+      refresh();
+    }).catch(() => { $("login-error").textContent = "Could not reach the daemon"; });
+  };
+
+  $("login-code").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") $("login-submit").click();
+  });
+
+  refresh().then(() => {
+    if (!$("app").classList.contains("hidden")) connectStream();
+  });
+  setInterval(refresh, 30000);
+})();
+</script>
+</body>
+</html>

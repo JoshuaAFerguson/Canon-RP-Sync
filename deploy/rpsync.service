@@ -1,13 +1,22 @@
+# System-wide systemd unit. `rpsync service install` generates this for you,
+# including the right paths; this copy is here for reference and for
+# configuration-managed hosts.
 [Unit]
 Description=Canon EOS RP wireless photo sync
+Documentation=https://github.com/JoshuaAFerguson/canon-rp-sync
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/rpsync daemon --dest /srv/photos/canon
+Type=simple
+ExecStart=/usr/local/bin/rpsync daemon --config /etc/rpsync/rpsync.yaml
+WorkingDirectory=/var/lib/rpsync
 Restart=always
 RestartSec=5
+TimeoutStopSec=30
 User=rpsync
+Group=rpsync
+StateDirectory=rpsync
 
 [Install]
 WantedBy=multi-user.target
